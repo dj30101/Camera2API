@@ -51,6 +51,8 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     private static final String TAG = MainActivity.class.getSimpleName();
     private static final SparseIntArray ORIENTATIONS = new SparseIntArray();
     private static final int REQUEST_CAMERA_PERMISSION = 200;
+    private static final String CAMERA_FRONT = "1";
+    private static final String CAMERA_BACK = "0";
 
     static {
         ORIENTATIONS.append(Surface.ROTATION_0, 90);
@@ -64,10 +66,11 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
     protected CaptureRequest.Builder captureRequestBuilder;
     private ActivityMainBinding binding;
     private Activity activity;
-    private String cameraId;
+    private String cameraId = CAMERA_BACK;
     private Size imageDimension;
     private ImageReader imageReader;
     private Handler mBackgroundHandler;
+    private boolean isFlashOn = false;
     private final CameraDevice.StateCallback stateCallback = new CameraDevice.StateCallback() {
         @Override
         public void onOpened(CameraDevice camera) {
@@ -86,6 +89,28 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         public void onError(CameraDevice camera, int error) {
             cameraDevice.close();
             cameraDevice = null;
+            String errorMsg;
+            switch (error) {
+                case ERROR_CAMERA_DEVICE:
+                    errorMsg = "Fatal (device)";
+                    break;
+                case ERROR_CAMERA_DISABLED:
+                    errorMsg = "Device policy";
+                    break;
+                case ERROR_CAMERA_IN_USE:
+                    errorMsg = "Camera in use";
+                    break;
+                case ERROR_CAMERA_SERVICE:
+                    errorMsg = "Fatal (service)";
+                    break;
+                case ERROR_MAX_CAMERAS_IN_USE:
+                    errorMsg = "Maximum cameras in use";
+                    break;
+                default:
+                    errorMsg = "Unknown";
+                    break;
+            }
+            Log.e(TAG, "StateCallback :> onError called :" + error + "  ::> " + errorMsg);
         }
     };
     TextureView.SurfaceTextureListener textureListener = new TextureView.SurfaceTextureListener() {
@@ -121,6 +146,8 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
 
     private void setUpListeners() {
         binding.takePictureBtn.setOnClickListener(this);
+        binding.flipCameraBtn.setOnClickListener(this);
+        binding.ibFlash.setOnClickListener(this);
     }
 
     protected void startBackgroundThread() {
@@ -162,12 +189,12 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             List<Surface> outputSurfaces = new ArrayList<Surface>(2);
             outputSurfaces.add(reader.getSurface());
             outputSurfaces.add(new Surface(binding.textureView.getSurfaceTexture()));
-            final CaptureRequest.Builder captureBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
-            captureBuilder.addTarget(reader.getSurface());
-            captureBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
+            captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE);
+            captureRequestBuilder.addTarget(reader.getSurface());
+            captureRequestBuilder.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO);
             // Orientation
             int rotation = getWindowManager().getDefaultDisplay().getRotation();
-            captureBuilder.set(CaptureRequest.JPEG_ORIENTATION, ORIENTATIONS.get(rotation));
+            captureRequestBuilder.set(CaptureRequest.JPEG_ORIENTATION, ORIENTATIONS.get(rotation));
             File mediaStorageDir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), getString(R.string.app_name));
 
             // Create the storage directory if it does not exist
@@ -178,8 +205,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 }
             }
             // Create a media file name
-            @SuppressLint("SimpleDateFormat")
-            String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
+            @SuppressLint("SimpleDateFormat") String timeStamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date());
             File mediaFile = new File(mediaStorageDir.getPath() + File.separator + "IMG_" + timeStamp + ".jpg");
 
 
@@ -227,7 +253,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
                 @Override
                 public void onConfigured(CameraCaptureSession session) {
                     try {
-                        session.capture(captureBuilder.build(), captureListener, mBackgroundHandler);
+                        session.capture(captureRequestBuilder.build(), captureListener, mBackgroundHandler);
                     } catch (CameraAccessException e) {
                         e.printStackTrace();
                     }
@@ -249,6 +275,11 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             texture.setDefaultBufferSize(imageDimension.getWidth(), imageDimension.getHeight());
             Surface surface = new Surface(texture);
             captureRequestBuilder = cameraDevice.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW);
+            if (isFlashOn) {
+                captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_TORCH);
+            } else {
+                captureRequestBuilder.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF);
+            }
             captureRequestBuilder.addTarget(surface);
             cameraDevice.createCaptureSession(Collections.singletonList(surface), new CameraCaptureSession.StateCallback() {
                 @Override
@@ -276,11 +307,18 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         CameraManager manager = (CameraManager) getSystemService(Context.CAMERA_SERVICE);
         Log.e(TAG, "is camera open");
         try {
-            cameraId = manager.getCameraIdList()[0];
+            String[] cameraIdList = manager.getCameraIdList();
+            if (cameraIdList.length > 1) {
+                binding.flipCameraBtn.setVisibility(View.VISIBLE);
+            } else {
+                binding.flipCameraBtn.setVisibility(View.GONE);
+            }
             CameraCharacteristics characteristics = manager.getCameraCharacteristics(cameraId);
             StreamConfigurationMap map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP);
             assert map != null;
             imageDimension = map.getOutputSizes(SurfaceTexture.class)[0];
+            /* Sometimes max/min dimension not support for preview. Use alternate dimension*/
+            Log.d(TAG, "Size at 0 :::> width = " + map.getOutputSizes(SurfaceTexture.class)[0].getWidth() + "\n Height : " + map.getOutputSizes(SurfaceTexture.class)[0].getHeight() + "\n" + "width : " + map.getOutputSizes(SurfaceTexture.class)[1].getWidth() + "\n Height : " + map.getOutputSizes(SurfaceTexture.class)[1].getHeight());
             // Add permission for camera and let user grant the permission
             if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED && ActivityCompat.checkSelfPermission(this, android.Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
                 ActivityCompat.requestPermissions(MainActivity.this, new String[]{android.Manifest.permission.CAMERA, android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CAMERA_PERMISSION);
@@ -333,11 +371,7 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
         super.onResume();
         Log.e(TAG, "onResume");
         startBackgroundThread();
-        if (binding.textureView.isAvailable()) {
-            openCamera();
-        } else {
-            binding.textureView.setSurfaceTextureListener(textureListener);
-        }
+        reopenCamera();
     }
 
     @Override
@@ -355,6 +389,36 @@ public class MainActivity extends AppCompatActivity implements View.OnClickListe
             case R.id.takePictureBtn:
                 takePicture();
                 break;
+            case R.id.flipCameraBtn:
+                if (cameraId.equals(CAMERA_FRONT)) {
+                    cameraId = CAMERA_BACK;
+                    binding.ibFlash.setVisibility(View.VISIBLE);
+                } else if (cameraId.equals(CAMERA_BACK)) {
+                    cameraId = CAMERA_FRONT;
+                    binding.ibFlash.setVisibility(View.GONE);
+                }
+                closeCamera();
+                reopenCamera();
+                break;
+            case R.id.ibFlash:
+                isFlashOn = !isFlashOn;
+                if (isFlashOn) {
+                    binding.ibFlash.setImageResource(R.drawable.ic_baseline_flashlight_off_24);
+                } else {
+                    binding.ibFlash.setImageResource(R.drawable.ic_baseline_flashlight_on_24);
+                }
+                closeCamera();
+                reopenCamera();
+                break;
         }
     }
+
+    private void reopenCamera() {
+        if (binding.textureView.isAvailable()) {
+            openCamera();
+        } else {
+            binding.textureView.setSurfaceTextureListener(textureListener);
+        }
+    }
+
 }
